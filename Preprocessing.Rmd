@@ -1,0 +1,514 @@
+---
+title: "Dashboard de recommandation restaurant"
+output:
+    rmdformats::readthedown:
+      code_folding: none
+      self_contained: true
+      lightbox: true
+      highlight: tango
+---
+
+```{r setup, include=FALSE,warning=FALSE, comment=NA, message=FALSE}
+library(stringr)
+library(ggplot2)
+library(dplyr)
+library(tm)
+library(wordcloud)
+library(shiny)
+library(shinydashboard)
+library(shinyWidgets)
+library(bslib)
+library(wordcloud2) 
+library(kableExtra)
+library(rsconnect)
+```
+
+# Gestion des variables encodée en liste
+
+## Gestion des attributs des restaurants
+
+Je charge la base de données concernant les différents business.
+
+```{r}
+df <- read.csv('./data/yelp_academic_dataset_business.csv')
+```
+
+Je ne garde que les restaurants qui ne sont pas fermés.
+
+```{r}
+df <- df %>% 
+    filter(grepl("Restaurants",df$categories,fixed=T)) %>%
+    filter(is_open==1) %>% 
+    filter(!attributes == "") %>% 
+    select(business_id,attributes)
+```
+
+La variable attribute est une liste dans laquelle figurent beaucoup d'attributs. Le code suivant permet de gérer ce texte afin de transformer les éléments de la liste en variable.
+
+```{r}
+df$attributes <- df$attributes %>%
+    str_replace("touristy", "ambience.touristy") %>%
+    str_replace("hipster", "ambience.hispter") %>%
+    str_replace("romantic", "ambience.romantic") %>%
+    str_replace("divey", "ambience.divey") %>%
+    str_replace("intimate", "ambience.intimate") %>%
+    str_replace("trendy", "ambience.trendy") %>%
+    str_replace("upscale", "ambience.upscale") %>%
+    str_replace("classy", "ambience.classy") %>%
+    str_replace( "casual", "ambience.casual") 
+
+df$attributes <- df$attributes %>% 
+    gsub("[{}]", "", x=.) %>% 
+    gsub('["]', "", x=.) %>% 
+    gsub(" ", "", x=.) %>%
+    gsub("Row", "", x=.) %>%
+    gsub('^.|.$', '', x=.)
+
+df$attributes <- df$attributes %>%
+    str_remove("Ambience=") %>%
+    str_remove("GoodForMeal=") %>%
+    str_remove('BusinessParking=') %>%
+    str_remove('BestNights=') %>%
+    str_remove('DietaryRestrictions=') %>%
+    str_remove('Music=') %>%
+    str_remove('HairSpecializesIn=') 
+
+df$attributes <- df$attributes %>%
+    str_replace_all("=u'", "='") %>%
+    str_replace_all("-", "")
+
+df$attributes <- df$attributes %>%
+    str_replace_all("None", "'None'") %>%
+    str_replace_all("False", "FALSE") %>%
+    str_replace_all("True", "TRUE") %>%
+    str_replace_all("-", "") %>%
+    str_replace_all("'FALSE'", "FALSE") %>%
+    str_replace_all("'TRUE'", "TRUE") %>%
+    str_replace_all(",FALSE", "") %>%
+    str_replace_all(",TRUE", "") %>%
+    str_replace_all("''", "'") %>%
+    str_replace_all(",'None'", "") %>%
+    str_replace_all("TRUE", "'TRUE'") %>%
+    str_replace_all("FALSE", "'FALSE'") %>%
+    str_replace_all(",',", ",")
+
+df$attributes <- df$attributes %>%
+    str_replace_all(":", "=")
+```
+
+Transformation des éléments de la liste attributs en variable de la base de données.
+
+```{r}
+df <- df[-c(3836, 6826),]
+
+df1 <- eval(parse(text = paste("data.frame(", df$attributes[3487], ")", sep = "")))
+for (i in c(1:18469, 18471:31687)){
+    df1 <- eval(parse(text = paste("add_row(df1, ", df$attributes[i], ")", sep = "")))
+}
+
+df1$business_id <-  c(df$business_id[3487], df$business_id[1:3486], df$business_id[3488:31687])
+```
+
+```{r}
+df1$ambiance <- ifelse(df1$ambience.romantic=="TRUE", "romantic",
+                      ifelse(df1$ambience.upscale=="TRUE", "upscale",
+                             ifelse(df1$hipster=="TRUE", "hipster",
+                                    ifelse(df1$ambience.casual=="TRUE", "casual", NA))))
+
+df1$service <- ifelse(df1$breakfast== "TRUE"  | df1$brunch== "TRUE" , "breakfast/brunch",
+                      ifelse(df1$lunch == "TRUE" | df1$dinner== "TRUE" , "lunch/dinner", NA))
+
+df1$NoiseLevel <- ifelse(df1$NoiseLevel == "quiet", 0,
+                      ifelse(df1$NoiseLevel == "average", 1,
+                             ifelse(df1$NoiseLevel == "loud", 2,
+                                    ifelse(df1$NoiseLevel == "very_loud", 3, NA))))
+
+df1$WiFi[df1$WiFi != "free"] <- FALSE
+df1$WiFi[df1$WiFi == "free"] <- TRUE
+
+write.csv(df1, "./data/business_attributes2.csv")
+```
+
+## Gestion des horaires d'ouverture
+
+Nous effectuons maintenant le même processus mais concernant les horaires d'ouverture.
+
+```{r}
+df <- read.csv('./data/yelp_academic_dataset_business.csv')
+```
+
+```{r}
+df <- df %>% 
+    filter(grepl("Restaurants",df$categories,fixed=T)) %>%
+    filter(is_open==1) %>% 
+    filter(!hours == "") %>% 
+    select(business_id,hours)
+```
+
+Comme pour les attributs, les horaires d'ouverture sont codés sous forme de liste dans la base de données d'origine mais je souhaite les transformer en variable.
+
+```{r}
+df$hours <- df$hours %>% 
+    gsub("[{}]", "", x=.) %>% 
+    gsub('["]', "", x=.) %>% 
+    gsub(" ", "", x=.) %>%
+    gsub("Row", "", x=.) %>%
+    gsub('^.|.$', '', x=.)
+
+df$hours <- df$hours %>%
+    str_replace_all("None", "'None'")
+```
+
+Création des variables relatives aux horaires d'ouverture.
+
+```{r}
+df$hours[1]
+
+df1 <- eval(parse(text = paste("data.frame(", df$hours[1], ")", sep = "")))
+for (i in 2:28838){
+    df1 <- eval(parse(text = paste("add_row(df1, ", df$hours[i], ")", sep = "")))
+}
+
+df1$business_id <-  df$business_id
+```
+
+```{r}
+df1[df1 == "0:0-0:0" | df1 == "None" | df1 == "none"] <- NA
+
+str_day <- c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+for(day in str_day){
+    df1[, paste(day, "_open", sep = "")] <- str_split(df1[, day], "-", simplify = T)[,1] %>% str_sub(0, 2) %>% str_remove(":")
+    df1[, paste(day, "_close", sep = "")] <- str_split(df1[, day], "-", simplify = T)[,2] %>% str_sub(0, 2) %>% str_remove(":")
+}
+df1 <- df1[, !(colnames(df1) %in% str_day)]
+
+write.csv(df1, "./data/business_hours2.csv")
+```
+
+# Gestion de la table principale
+
+Désormais, je concatène toutes les variables créées dans la partie précédente. Premièrement, j'importe les jeux de données créés.
+
+```{r}
+business <- read.csv('./data/yelp_academic_dataset_business.csv')
+attributes <- read.csv('./data/business_attributes2.csv')
+hours <- read.csv('./data/business_hours2.csv')
+```
+
+Je ne garde que les variables intéressantes. 
+
+```{r}
+df <- business %>%
+    merge(attributes, by = "business_id") %>%
+    merge(hours, by = "business_id") %>%
+    select(business_id, stars, review_count, categories, city, name, BusinessAcceptsCreditCards,
+           DogsAllowed, GoodForDancing, GoodForKids, OutdoorSeating, RestaurantsGoodForGroups,
+           RestaurantsReservations, WheelchairAccessible, WiFi, Monday_open, Monday_close, Tuesday_open, Tuesday_close,
+           Wednesday_open, Wednesday_close, Thursday_open, Thursday_close, Friday_open, Friday_close, Saturday_open,
+           Saturday_close, Sunday_open, Sunday_close, RestaurantsPriceRange2, ambiance, service, NoiseLevel)
+
+remove(business, hours, attributes)
+```
+
+Quelques valeurs doivent être ré-encodées pour être plus faciles à manipuler ultérieurement.
+
+```{r}
+df[df == "None" | df == "none" | is.na(df) | df == "0:0-0:0" | df == ""] <- NA
+
+df[, 7:15] <- sapply(df[, 7:15], as.logical)
+
+df$RestaurantsPriceRange2 <- df$RestaurantsPriceRange2 %>% as.numeric()
+df$popularity <- df$stars * log(df$review_count)
+df$popularity <- df$popularity / max(df$popularity)
+df$categories <- str_replace_all(df$categories, ",", "")
+df$name <- str_replace_all(df$name, ",", "")
+write.table(df, "./data/df2.txt", row.names = F, sep = ";")
+```
+
+# Gestion de la table review - Nuage de mots
+
+Il faut faire un preprocessing sur la table review afin de créer le nuage de mots plus rapidement dans le DashBoard.
+
+```{r}
+review <- read.csv("./data/yelp_academic_dataset_review.csv")
+df <- read.table( 
+    text = readLines("./data/df2.txt"), 
+    header = TRUE,  
+    sep = ";" 
+)
+review <- review[, c(2, 8)]
+review <- review[review$business_id %in% unique(df$business_id),]
+review$text <- str_to_lower(review$text)
+review$text <- str_replace_all(review$text, "[^[:alnum:]]", " ")
+review$text <- gsub('[[:digit:]]+', '', review$text)
+stopwords_regex = paste(stopwords('en'), collapse = '\\b|\\b')
+stopwords_regex = paste0('\\b', stopwords_regex, '\\b')
+review$text <- str_replace_all(review$text, stopwords_regex, '')
+review$text <- str_squish(review$text)
+review$text <- str_replace_all(review$text, " s | t ", " ")
+write.table(review, "./data/review2.txt", row.names = F, sep = ";")
+```
+
+# Création d'un DashBoard R Shiny
+
+Le code suivant permet de générer le Dashboard sous R shiny.
+
+```{r}
+library(bslib)
+df <- read.table( 
+    text = readLines("./data/df2.txt"), 
+    header = TRUE,  
+    sep = ";" 
+)
+review <- read.table( 
+    text = readLines("./data/review2.txt"), 
+    header = TRUE,  
+    sep = ";" 
+)
+ui <- fluidPage(
+    tags$head(tags$style(HTML("
+        .selectize-input, .selectize-dropdown {
+          font-size: 75%;
+        }
+        "))),  
+    theme = bs_theme(
+        bg = "white", fg = "black",
+        base_font = font_google("Righteous")),
+    titlePanel("Trouvez le restaurant qui vous correspond !"),
+    sidebarLayout(
+        sidebarPanel(
+            title = "Main parameters", status = "warning", solidHeader = TRUE, width = 4,
+            textInput("keyword", label = h3("Mots-clés"), value = ""),
+            fixedRow(
+                column(12,
+                       fixedRow(
+                           column(4,
+                                  selectInput(inputId = "jour", label = "Choisir une journée ?",
+                                              choices = c("Monday", "Tuesday", "Wednesday",
+                                                          "Thursday", "Friday", "Saturday", "Sunday"))
+                           ),
+                           column(8,
+                                  sliderInput("heure",  "Heure",
+                                              min = 0, max = 23, value = 21)
+                           )
+                       )
+                )
+            ),
+            fixedRow(
+                column(12,
+                       fixedRow(
+                           column(4,
+                                  selectInput(inputId = "city", label = "Choisir une ville:",
+                                              choices = unique(df$city))
+                           ),
+                           column(8,
+                                  sliderInput("importance",  "Ville - importance",
+                                              min = 0, max = 100, value = 30)
+                           )
+                       )
+                )
+            ),
+            
+            sliderInput("popularity",  "Importance des avis",
+                        min = 0, max = 10, value = 5),
+            fixedRow(
+                column(12,
+                       fixedRow(
+                           column(4,
+                                  sliderInput("prix",  "Niveau des prix",
+                                              min = 1, max = 4, value = c(2, 3))
+                           ),
+                           column(8,
+                                  sliderInput("v_prix",  "Importance du prix",
+                                              min = 0, max = 100, value = 30)
+                           )
+                       )
+                )
+            ),
+            fixedRow(
+                column(12,
+                       fixedRow(
+                           column(4,
+                                  selectInput(inputId = "service", label = "Quel service ?",
+                                              choices = c("lunch/dinner", "breakfast/brunch"),
+                                              selected = "lunch/dinner")
+                           ),
+                           column(8,
+                                  sliderInput("v_service",  "Importance du service",
+                                              min = 0, max = 100, value = 30)
+                           )
+                       )
+                )
+            ),
+            fixedRow(
+                column(12,
+                       fixedRow(
+                           column(4,
+                                  selectInput(inputId = "ambiance", label = "Quelle ambiance ?",
+                                              choices = unique(df$ambiance),
+                                              selected = "casual")
+                           ),
+                           column(8,
+                                  sliderInput("v_ambiance",  "Importance de l'ambiance",
+                                              min = 0, max = 100, value = 30)
+                           )
+                       )
+                )
+            ),
+            fixedRow(
+                column(12,
+                       fixedRow(
+                           column(4,
+                                  sliderInput("bruit",  "Niveau du bruit",
+                                              min = 1, max = 4, value = c(2, 3))
+                           ),
+                           column(8,
+                                  sliderInput("v_bruit",  "Importance du critère",
+                                              min = 0, max = 100, value = 30)
+                           )
+                       )
+                )
+            ),
+            checkboxGroupInput(
+                inputId = "autres",
+                label = "Autres attributs", 
+                choices = colnames(df)[7:15],
+                inline = TRUE
+            )
+        ),
+        mainPanel(
+            h1("Le Top 5 des restaurants faits pour vous :"),
+            tableOutput("summary"),
+            fluidRow(
+                column(width = 6,
+                       h3("TOP 1 Restaurant - Pureté d'ajustement aux préferences:"),
+                       plotOutput("distPlot2")
+                ),
+                column(width = 6,
+                       h3("TOP 1 Restaurant - Nuage de mot:"),
+                       plotOutput("distPlot",width = "500px", height="375px")
+                )
+            ),
+        )
+    )
+)
+
+library(stringr)
+library(ggplot2)
+library(dplyr)
+library(wordcloud)
+library(shiny)
+
+server <- function(input, output) {
+    output$summary <- renderTable({
+        v_wgt <- rep(0, 15)
+        names(v_wgt) <- c(colnames(df)[c(7:15)], "city_", "popularity", "price", "ambiance_", "service_", "NoiseLevel_")
+        keyword <- input$keyword
+        day <- input$jour
+        hours <- input$heure
+        keyword <- ifelse(sum(str_detect(str_to_lower(df$categories), str_to_lower(keyword))) > 0, keyword, "")
+        df <- df[str_detect(str_to_lower(df$categories), str_to_lower(keyword)) & (df[, paste(day, "_open", sep = "")] <= hours) & (df[, paste(day, "_close", sep = "")] > hours),] %>% filter(!is.na(business_id))
+        df$city_ <- df$city == input$city
+        df$price <- df$RestaurantsPriceRange2 >= input$prix[1] & df$RestaurantsPriceRange2 <= input$prix[2]
+        df$ambiance_ <- df$ambiance == input$ambiance
+        df$service_ <- df$service == input$service
+        df$NoiseLevel_ <- df$NoiseLevel %in% input$bruit
+        v_wgt[names(v_wgt) == "city_"] <- input$importance
+        v_wgt[names(v_wgt) == "popularity"] <- input$popularity
+        v_wgt[names(v_wgt) == "price"] <- input$v_prix
+        v_wgt[names(v_wgt) == "ambiance_"] <- input$v_ambiance
+        v_wgt[names(v_wgt) == "service_"] <- input$v_service
+        v_wgt[names(v_wgt) == input$autres] <- input$v_bruit
+        contri <- sweep(df[, names(v_wgt)], MARGIN = 2, v_wgt, '*')
+        contri$score <- rowSums(contri, na.rm = T)
+        df$score <- contri$score
+        contri <- arrange(contri, desc(score))
+        df[df == FALSE] <- "Non"
+        df[df == TRUE] <- "Oui"
+        df[is.na(df)] <- "Inconnu"
+        df %>% 
+            arrange(desc(score)) %>%
+            slice(1:5) %>%
+            mutate("Top Restaurant" = 1:5) %>%
+            select("Top Restaurant", "name", "city", "stars", "review_count", "RestaurantsPriceRange2",
+                   "ambiance", "service", input$autres, "score") %>%
+            rename("Nom du restaurant" = "name",
+                   "Ville" = "city",
+                   "Étoiles" = "stars",
+                   "Nombre d'avis" = "review_count",
+                   "Échelle de prix" = "RestaurantsPriceRange2",
+                   "Ambiance" = "ambiance",
+                   "Service" = "service",
+                   "Score" = "score")
+    })
+    output$distPlot <- renderPlot({
+        v_wgt <- rep(0, 15)
+        names(v_wgt) <- c(colnames(df)[c(7:15)], "city_", "popularity", "price", "ambiance_", "service_", "NoiseLevel_")
+        keyword <- input$keyword
+        day <- input$jour
+        hours <- input$heure
+        keyword <- ifelse(sum(str_detect(str_to_lower(df$categories), str_to_lower(keyword))) > 0, keyword, "")
+        df <- df[str_detect(str_to_lower(df$categories), str_to_lower(keyword)) & (df[, paste(day, "_open", sep = "")] <= hours) & (df[, paste(day, "_close", sep = "")] > hours),] %>% filter(!is.na(business_id))
+        df$city_ <- df$city == input$city
+        df$price <- df$RestaurantsPriceRange2 >= input$prix[1] & df$RestaurantsPriceRange2 <= input$prix[2]
+        df$ambiance_ <- df$ambiance == input$ambiance
+        df$service_ <- df$service == input$service
+        df$NoiseLevel_ <- df$NoiseLevel %in% input$bruit
+        v_wgt[names(v_wgt) == "city_"] <- input$importance
+        v_wgt[names(v_wgt) == "popularity"] <- input$popularity
+        v_wgt[names(v_wgt) == "price"] <- input$v_prix
+        v_wgt[names(v_wgt) == "ambiance_"] <- input$v_ambiance
+        v_wgt[names(v_wgt) == "service_"] <- input$v_service
+        v_wgt[names(v_wgt) == input$autres] <- input$v_bruit
+        contri <- sweep(df[, names(v_wgt)], MARGIN = 2, v_wgt, '*')
+        contri$score <- rowSums(contri, na.rm = T)
+        df$score <- contri$score
+        contri <- arrange(contri, desc(score))
+        tab <- str_split(review$text[review$business_id == df$business_id[1]], " ") %>%
+            unlist() %>%
+            table() %>%
+            sort(decreasing = T)
+        wordcloud(words = names(tab), freq = tab, min.freq = 1,
+                  max.words=50, random.order=FALSE, rot.per=0.35,
+                  colors=brewer.pal(8, "Dark2"), scale=c(4,0.5))
+    })
+    output$distPlot2 <- renderPlot({
+        v_wgt <- rep(0, 15)
+        names(v_wgt) <- c(colnames(df)[c(7:15)], "city_", "popularity", "price", "ambiance_", "service_", "NoiseLevel_")
+        keyword <- input$keyword
+        day <- input$jour
+        hours <- input$heure
+        keyword <- ifelse(sum(str_detect(str_to_lower(df$categories), str_to_lower(keyword))) > 0, keyword, "")
+        df <- df[str_detect(str_to_lower(df$categories), str_to_lower(keyword)) & (df[, paste(day, "_open", sep = "")] <= hours) & (df[, paste(day, "_close", sep = "")] > hours),] %>% filter(!is.na(business_id))
+        df$city_ <- df$city == input$city
+        df$price <- df$RestaurantsPriceRange2 >= input$prix[1] & df$RestaurantsPriceRange2 <= input$prix[2]
+        df$ambiance_ <- df$ambiance == input$ambiance
+        df$service_ <- df$service == input$service
+        df$NoiseLevel_ <- df$NoiseLevel %in% input$bruit
+        v_wgt[names(v_wgt) == "city_"] <- input$importance
+        v_wgt[names(v_wgt) == "popularity"] <- input$popularity
+        v_wgt[names(v_wgt) == "price"] <- input$v_prix
+        v_wgt[names(v_wgt) == "ambiance_"] <- input$v_ambiance
+        v_wgt[names(v_wgt) == "service_"] <- input$v_service
+        v_wgt[names(v_wgt) == input$autres] <- input$v_bruit
+        contri <- sweep(df[, names(v_wgt)], MARGIN = 2, v_wgt, '*')
+        contri$score <- rowSums(contri, na.rm = T)
+        df$score <- contri$score
+        contri <- arrange(contri, desc(score))
+        purete <- max(df$score) / (input$importance + input$popularity + input$v_prix + input$v_ambiance + input$v_service + input$v_bruit)
+        ggplot() +
+            geom_text(aes(x = 5, y = 5, label = paste(round(100*purete, 1), "%", sep = "")), size = 50, col = "blue") +
+            theme_classic() +
+            theme(axis.line=element_blank(),axis.text.x=element_blank(),
+                  axis.text.y=element_blank(),axis.ticks=element_blank(),
+                  axis.title.x=element_blank(),
+                  axis.title.y=element_blank(),legend.position="none",
+                  panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+                  panel.grid.minor=element_blank(),plot.background=element_blank())+
+            ylim(0, 6)
+    })
+}
+
+shinyApp(ui = ui, server = server)
+```
+
