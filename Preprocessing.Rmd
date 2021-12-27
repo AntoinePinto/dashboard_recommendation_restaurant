@@ -23,7 +23,7 @@ library(kableExtra)
 library(rsconnect)
 ```
 
-# Gestion des variables encodée en liste
+# Gestion des variables encodées en liste
 
 ## Gestion des attributs des restaurants
 
